@@ -1,0 +1,421 @@
+---
+title: "PS3"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, message=FALSE}
+library(tidyverse)
+library(lubridate)
+library(lattice)
+
+#Getting paths for the different files
+data_files <- 
+  list.files("step5_fulloutput") %>% 
+  map(~ str_glue("step5_fulloutput/", .))
+
+#Writing function to read each file
+reading_files <- function(data_file) {
+  read_tsv(data_file, col_names = c("date", "hour", "drivers_onduty", "t_onduty", "t_occupied", "n_pass", "n_trip", "n_mile", "earnings"))
+}
+
+#Weather data
+weather <- 
+  read_csv("nyc_precipitation.csv") %>% 
+  select(DATE, precip = HPCP)
+  # mutate(DATE = parse_date_time(DATE, "Ymd HMS")) #Run this if DATE isn't automatically imported as datetime object
+  
+
+data <- 
+  data_files %>% 
+  map_dfr(reading_files) %>% #running function and joining all datasets
+  mutate(
+    date_time = make_datetime(year = year(date), month = month(date), day = day(date), hour = hour)
+  ) %>% 
+  select(-date, -hour) %>% 
+  left_join(weather , by = c("date_time" = "DATE")) %>% #Joining with weather data
+  mutate_at(vars(precip), replace_na, 0) %>% 
+  mutate(
+    average_wage = earnings/t_onduty,
+    rain = if_else(precip > 0, "rain", "dry"), 
+    hour = hour(date_time)
+  )
+```
+
+
+###Data cleaning
+```{r}
+new_data <- 
+  data %>% 
+  filter(
+    earnings > 0,
+    average_wage <= 1000, 
+    t_onduty > 0, 
+    n_pass > 0, 
+    n_trip > 0
+  )
+```
+
+
+###A quick check of the data
+```{r}
+#drivers_onduty
+histogram(new_data$drivers_onduty)
+
+#t_onduty
+histogram(new_data$t_onduty)
+new_data %>% count(t_onduty) %>% head()
+new_data %>% count(t_onduty) %>% tail()
+
+#t_occupied
+histogram(new_data$t_occupied)
+
+#n_pass
+histogram(new_data$n_pass) 
+new_data %>% count(n_pass) %>% head()
+new_data %>% count(n_pass) %>% tail()
+
+#n_trip
+histogram(new_data$n_trip)
+new_data %>% count(n_trip) %>% head()
+new_data %>% count(n_trip) %>% tail()
+
+#n_mile
+histogram(new_data$n_mile)
+new_data %>% count(n_mile) %>% head()
+new_data %>% count(n_mile) %>% tail()
+
+#earnings
+histogram(new_data$earnings)
+new_data %>% count(earnings) %>% head()
+new_data %>% count(earnings) %>% tail()
+
+#date_time
+new_data %>% 
+  ggplot(aes(date_time)) +
+  geom_histogram()
+
+new_data %>% 
+  arrange(date_time) %>% tail()
+
+#precipitation
+new_data %>% 
+  filter(precip != 0) %>% 
+  ggplot(aes(precip)) + 
+  geom_histogram()
+
+#Checking average_wage
+histogram(new_data$average_wage)
+new_data %>% count(average_wage) %>% head()
+new_data %>% count(average_wage) %>% tail()
+
+#Checking hour
+new_data %>% 
+  ggplot(aes(hour)) + 
+  geom_histogram(bins = 24)
+  
+
+# anti_join(data, new_data) %>% 
+#   ggplot(aes(hour)) + 
+#   geom_histogram(bins = 24)
+# 
+# anti_join(data, new_data) %>% 
+#   count(hour, sort = TRUE)
+# 
+# anti_join(data, new_data) %>% 
+#   filter(average_wage > 0) %>% 
+#   ggplot(aes(average_wage)) + 
+#   geom_histogram()
+
+```
+
+###Number of drivers and passengers by rain 
+
+```{r}
+# png("number_drivers.png", width=8, height=5, units="in", res=300)
+new_data %>% 
+  group_by(hour, rain) %>% 
+  summarize(drivers_onduty = sum(drivers_onduty)) %>% 
+  ggplot(aes(hour, drivers_onduty, color = rain)) + 
+  geom_line() + 
+  scale_x_continuous(breaks = seq(0, 23, 2)) + 
+  scale_y_log10(labels = function(x) x/1000000) + 
+  scale_color_discrete(name = "Weather") + 
+  labs(
+    x = "Hour of the day", 
+    y = "Logged number of drivers on duty (in millions)", 
+    title = "Number of Drivers on Duty in Each Hour of the Day"
+  ) + 
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+
+# dev.off()
+```
+
+
+```{r}
+# png("number_pass.png", width=8, height=5, units="in", res=300)
+new_data %>% 
+  group_by(hour, rain) %>% 
+  summarize(total_pass = sum(n_pass)) %>% 
+  ggplot(aes(hour, total_pass, color = rain)) + 
+  geom_line() + 
+  scale_x_continuous(breaks = seq(0, 23, 2)) + 
+  scale_y_log10(labels = function(x) x/1000000) + 
+  scale_color_discrete(name = "Weather") + 
+  labs(
+    x = "Hour of the day", 
+    y = "Logged number of passengers (in millions)", 
+    title = "Number of Passengers in Each Hour of the Day"
+  ) + 
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+# dev.off()
+```
+
+
+```{r}
+labels <- c(drivers_onduty = "Drivers on Duty", total_pass = "Passengers")
+
+# png("number_pass_driver.png", width=8, height=5, units="in", res=300)
+new_data %>% 
+  group_by(hour, rain) %>% 
+  summarize(
+    drivers_onduty = sum(drivers_onduty), 
+    total_pass = sum(n_pass)
+  ) %>% 
+  gather(key = key, value = value, -hour, -rain) %>% 
+  ggplot(aes(hour, value, color = rain)) + 
+  geom_line() + 
+  facet_wrap(vars(key), labeller = labeller(key = labels)) + 
+  scale_x_continuous(breaks = seq(0, 23, 4)) + 
+  scale_y_log10(labels = function(x) x/1000000) + 
+  scale_color_discrete(name = "Weather") + 
+  labs(
+    x = "Hour of the day", 
+    y = "Logged Number (in millions)", 
+    title = "Number of Drivers on Duty and Passengers in Each Hour of the Day"
+  ) + 
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+
+# dev.off()
+```
+
+
+
+
+###Looking at Supply and Demand
+
+```{r}
+# png("rate_pass_driver.png", width=8, height=5, units="in", res=300)
+new_data %>% 
+  mutate(pass_driver_rate = n_pass/drivers_onduty) %>% 
+  group_by(hour, rain) %>% 
+  summarize(avg_pass_driver_rate = mean(pass_driver_rate, na.rm = TRUE)) %>% 
+  ggplot(aes(hour, avg_pass_driver_rate, color = rain)) + 
+  geom_line() + 
+  scale_x_continuous(breaks = seq(0, 23, 2)) + 
+  # scale_y_log10(labels = function(x) x/1000000) + 
+  scale_color_discrete(name = "Weather") + 
+  labs(
+    x = "Hour of the day", 
+    y = "Average rate of passengers to drivers", 
+    title = "Rate of Passengers to Drivers in Each Hour of the Day"
+  ) + 
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) + 
+  coord_cartesian(ylim = c(2, 5))
+# dev.off()
+```
+
+```{r}
+# png("avg_number_trips_driver.png", width=8, height=5, units="in", res=300)
+new_data %>% 
+  mutate(trips_per_driver = n_trip / drivers_onduty) %>% 
+  group_by(hour, rain) %>% 
+  summarize(avg_trips_per_driver = mean(trips_per_driver, na.rm = TRUE)) %>% 
+  ggplot(aes(hour, avg_trips_per_driver, color = rain)) + 
+  geom_line() + 
+  scale_x_continuous(breaks = seq(0, 23, 2)) + 
+  scale_y_continuous(breaks = seq(1, 3, 0.5)) + 
+  scale_color_discrete(name = "Weather") + 
+  labs(
+    x = "Hour of the day", 
+    y = "Average number of trips per driver", 
+    title = "Average Number of Trips Per Driver in Each Hour of the Day"
+  ) + 
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) + 
+  coord_cartesian(ylim = c(1.5, 3))
+
+# dev.off()
+```
+
+
+```{r}
+# png("average_wage.png", width=8, height=5, units="in", res=300)
+new_data %>% 
+  group_by(hour, rain) %>% 
+  summarize(average_wage = mean(average_wage, na.rm = TRUE)) %>% 
+  filter(hour != 23) %>% 
+  ggplot(aes(hour, average_wage, color = rain)) + 
+  geom_line() + 
+  scale_x_continuous(breaks = seq(0, 23, 2)) + 
+  scale_color_discrete(name = "Weather") + 
+  scale_y_continuous(breaks = seq(0, 300, 25), labels = function(x) str_c("$", x)) + 
+  labs(
+    x = "Hour of the day", 
+    y = "Average Wage (USD)", 
+    title = "Average Wage in Each Hour of the Day"
+  ) + 
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+
+# dev.off()
+```
+
+
+```{r}
+# new_data %>% 
+#   ggplot(aes(t_onduty, t_occupied, color = rain)) + 
+#   geom_smooth()
+```
+
+
+```{r}
+# png("average_miles_per_trip.png", width=8, height=5, units="in", res=300)
+new_data %>% 
+  mutate(miles_per_trip = n_mile/n_trip) %>% 
+  group_by(hour, rain) %>% 
+  summarize(avg_miles_per_trip = mean(miles_per_trip, na.rm = TRUE)) %>% 
+  ggplot(aes(hour, avg_miles_per_trip, color = rain)) + 
+  geom_line() + 
+  scale_x_continuous(breaks = seq(0, 23, 2)) + 
+  scale_color_discrete(name = "Weather") + 
+  scale_y_continuous(breaks = seq(2, 5, 0.5)) + 
+  labs(
+    x = "Hour of the day", 
+    y = "Average miles per trip", 
+    title = "Average Miles per Trip in Each Hour of the Day"
+  ) + 
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) + 
+  coord_cartesian(ylim = c(2, 4.5))
+
+# dev.off()
+```
+
+```{r}
+# png("average_pass_per_trip.png", width=8, height=5, units="in", res=300)
+new_data %>% 
+  mutate(pass_per_trip = n_pass/n_trip) %>% 
+  group_by(hour, rain) %>% 
+  summarize(avg_pass_per_trip = mean(pass_per_trip, na.rm = TRUE)) %>% 
+  ggplot(aes(hour, avg_pass_per_trip, color = rain)) + 
+  geom_line() + 
+  scale_x_continuous(breaks = seq(0, 23, 2)) + 
+  scale_color_discrete(name = "Weather") + 
+  scale_y_continuous(breaks = seq(1, 2, 0.05)) + 
+  labs(
+    x = "Hour of the day", 
+    y = "Average number of passengers per trip", 
+    title = "Average Number of Passengers per Trip in Each Hour of the Day"
+  ) + 
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) + 
+  coord_cartesian(ylim = c(1.5, 1.75))
+
+# dev.off()
+```
+
+```{r}
+new_data %>% 
+  mutate(
+    miles_per_trip = n_mile/n_trip, 
+    trips_per_driver = n_trip / drivers_onduty, 
+    hour_category = floor(hour/3), 
+    hour_category = 
+      case_when(
+        hour_category == 0 ~  "0-2", 
+        hour_category == 1 ~ "3-5", 
+        hour_category == 2 ~  "6-8", 
+        hour_category == 3 ~ "9-11", 
+        hour_category == 4 ~  "12-14", 
+        hour_category == 5 ~ "15-17", 
+        hour_category == 6 ~  "18-20",
+        hour_category == 7 ~  "21-23"
+        )
+
+  ) %>% 
+  group_by(hour, rain) %>% 
+  summarize(
+    avg_miles_per_trip = mean(miles_per_trip, na.rm = TRUE),
+    avg_trips_per_driver = mean(trips_per_driver, na.rm = TRUE), 
+    average_wage = mean(average_wage, na.rm = TRUE)
+  ) %>% 
+  mutate(
+    hour_category = floor(hour/3), 
+    hour_category = 
+      case_when(
+        hour_category == 0 ~  "0-2", 
+        hour_category == 1 ~ "3-5", 
+        hour_category == 2 ~  "6-8", 
+        hour_category == 3 ~ "9-11", 
+        hour_category == 4 ~  "12-14", 
+        hour_category == 5 ~ "15-17", 
+        hour_category == 6 ~  "18-20",
+        hour_category == 7 ~  "21-23"
+        )
+    )
+  
+  
+  ggplot(aes(avg_trips_per_driver, avg_miles_per_trip, color = rain)) + 
+  # geom_label(aes(label = hour))
+  geom_point() + 
+  ggrepel::geom_text_repel(aes(label = hour))
+```
+
+
+
+###Checking Hour 23 
+
+```{r}
+png("onduty_occupied.png", width=8, height=5, units="in", res=300)
+new_data %>% 
+  mutate(hour_23 = if_else(hour == 23, "Yes", "No")) %>% 
+  ggplot(aes(t_onduty, t_occupied)) + 
+  geom_hex() + 
+  geom_smooth(aes(color = hour_23), method = "gam") + 
+  scale_fill_viridis_c() + 
+  labs(
+    x = "Time on duty (hours)", 
+    y = "Time occupied (hours)", 
+    title = "Time on Duty Versus Time Occupied"
+  ) + 
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+
+dev.off()
+```
+
+
+```{r}
+new_data %>% 
+  mutate(hour = as.factor(hour)) %>% 
+  filter(hour %in% c(22, 23, 0)) %>% 
+  ggplot(aes(n_mile, color = hour)) + 
+  geom_density()
+```
+
+```{r}
+new_data %>% 
+  filter(hour > 17 | hour < 3) %>% 
+  ggplot(aes(earnings)) + 
+  geom_density() + 
+  facet_wrap(vars(hour))
+```
+
+
+
+```{r}
+new_data %>% 
+  filter(hour > 17 | hour < 3) %>% 
+  ggplot(aes(t_onduty)) + 
+  geom_density() + 
+  facet_wrap(vars(hour))
+```
